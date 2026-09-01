@@ -170,6 +170,7 @@
   @media print{
     @page{size:A4;margin:0}
     .app{display:none !important}
+    .toast{display:none !important}
     #print{display:block !important}
     body{margin:0;background:#fff}
   }
@@ -346,21 +347,38 @@
       });
   }
 
+  /** 把使用者貼的東西整理成可用的 /exec 網址；不行就回傳空字串 */
+  function normUrl(v){
+    v=String(v||"").trim().replace(/^["'<]+|["'>]+$/g,"");
+    if(!v) return "";
+    if(v.indexOf("script.google.com")<0) return "";
+    if(v.indexOf("/macros/s/")<0) return "";          // 編輯器網址不是這個格式
+    v=v.split("#")[0].split("?")[0];
+    var i=v.indexOf("/exec");
+    if(i>=0) return v.slice(0, i+5);
+    var j=v.indexOf("/dev");
+    if(j>=0) return v.slice(0, j+4);
+    return v.replace(/\/+$/,"")+"/exec";             // 只貼到 ID 就自動補上
+  }
+
+  var lastTry="";
   function setupScreen(msg){
     document.getElementById("view").innerHTML=
-      '<div class="box" style="max-width:640px;margin:0 auto">'+
+      '<div class="box" style="max-width:660px;margin:0 auto">'+
       '<h3>連線設定</h3>'+
       (msg?'<div class="warn" style="margin:0 0 12px">'+esc(msg)+'</div>':'')+
       '<p style="margin:0 0 12px;color:var(--mute);font-size:13px">'+
-      '貼上管理者給你的後端網址（Apps Script 部署後產生、結尾是 /exec）。'+
-      '只要輸入一次，這台裝置的瀏覽器會記住。</p>'+
-      '<input type="text" data-gasurl value="'+esc(GAS_URL)+'" '+
+      '貼上管理者給你的後端網址。長得像 '+
+      '<code>https://script.google.com/macros/s/AKfycb…/exec</code>，'+
+      '在 Apps Script 的「管理部署作業」裡複製。只要輸入一次，這台裝置會記住。</p>'+
+      '<input type="text" data-gasurl value="'+esc(lastTry||GAS_URL)+'" '+
       'placeholder="https://script.google.com/macros/s/.../exec">'+
       '<div style="margin-top:12px;display:flex;gap:8px">'+
         '<button class="b g" data-seturl="1">連線</button>'+
-        (GAS_URL?'<button class="s" data-clearurl="1">清除</button>':'')+
+        ((lastTry||GAS_URL)?'<button class="s" data-clearurl="1">清除重填</button>':'')+
       '</div></div>';
-    var el=document.querySelector("[data-gasurl]"); if(el) el.focus();
+    var el=document.querySelector("[data-gasurl]");
+    if(el){ el.focus(); el.select(); }
   }
 
   var saveTmr=null;
@@ -1365,17 +1383,22 @@
     if(d.xcsv){ exportCross(); return; }
     if(d.allcsv){ exportAllBranches(); return; }
     if(d.seturl){
-      var v=(document.querySelector("[data-gasurl]")||{}).value||"";
-      v=v.trim();
-      if(v.indexOf("https://")!==0 || v.indexOf("/exec")<0){
-        setupScreen("網址看起來不對，應該是 https://script.google.com/macros/s/.../exec"); return;
+      var raw=(document.querySelector("[data-gasurl]")||{}).value||"";
+      lastTry=raw.trim();
+      if(!lastTry){ setupScreen("輸入框是空的，請先把網址貼進去再按連線。"); return; }
+      var v=normUrl(lastTry);
+      if(!v){
+        setupScreen("這不像 Apps Script 的網頁應用程式網址。你貼的是：「"+lastTry+"」。"+
+          "正確的要包含 script.google.com/macros/s/ 並以 /exec 結尾，"+
+          "在 Apps Script 右上角「部署 → 管理部署作業」裡複製。");
+        return;
       }
       GAS_URL=v;
       try{ localStorage.setItem(URL_KEY, v); }catch(e){}
       load(); return;
     }
     if(d.clearurl){
-      GAS_URL="";
+      GAS_URL=""; lastTry="";
       try{ localStorage.removeItem(URL_KEY); }catch(e){}
       setupScreen(); return;
     }
@@ -1485,6 +1508,11 @@
   document.addEventListener("keydown", function(e){
     if(e.key!=="Enter") return;
     var el=e.target;
+    if(el.dataset && el.dataset.gasurl!==undefined){
+      e.preventDefault();
+      var b=document.querySelector("[data-seturl]"); if(b) b.click();
+      return;
+    }
     if(!el.dataset || el.dataset.pq===undefined) return;
     e.preventDefault();
     var all=Array.prototype.slice.call(document.querySelectorAll("[data-pq]"));
