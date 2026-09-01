@@ -198,7 +198,10 @@
 
   var TAB = "new";
   var S = { items:[], branches:[], orders:[], prices:{} };
-  var ME = "", SHEET_URL = "", IS_OWNER = false;
+  var ME = "", SHEET_URL = "", IS_OWNER = true;
+  var URL_KEY = "sgf.gasUrl";
+  var GAS_URL = "";
+  try { GAS_URL = localStorage.getItem(URL_KEY) || ""; } catch(e){}
 
   var PGROUPS = [
     {key:"GA", name:"院區Ａ組", showPrice:false, note:"鶯歌、三樹、桃園｜銷貨單不印金額"},
@@ -322,40 +325,64 @@
   }
   function fail(e){
     busy(false);
-    alert("Google 試算表沒有寫入成功：\n\n"+(e && e.message ? e.message : e)+
-          "\n\n請重新整理頁面後確認資料，再重試一次。");
+    alert("沒有寫入成功：\n\n"+((e && e.message) ? e.message : e)+
+          "\n\n請重新整理頁面確認資料，再重試一次。");
+  }
+
+  /** 呼叫 Apps Script 後端。用 text/plain 送出，避免 CORS 預檢。 */
+  function api(fn, args, ok, onErr){
+    if(!GAS_URL){ setupScreen(); return; }
+    busy(true);
+    fetch(GAS_URL, { method:"POST", body: JSON.stringify({fn:fn, args:args||[]}) })
+      .then(function(r){ return r.json(); })
+      .then(function(j){
+        busy(false);
+        if(!j || !j.ok) throw new Error((j && j.error) || "後端回應異常");
+        if(ok) ok(j.data);
+      })
+      .catch(function(e){
+        busy(false);
+        if(onErr) onErr(e); else fail(e);
+      });
+  }
+
+  function setupScreen(msg){
+    document.getElementById("view").innerHTML=
+      '<div class="box" style="max-width:640px;margin:0 auto">'+
+      '<h3>連線設定</h3>'+
+      (msg?'<div class="warn" style="margin:0 0 12px">'+esc(msg)+'</div>':'')+
+      '<p style="margin:0 0 12px;color:var(--mute);font-size:13px">'+
+      '貼上管理者給你的後端網址（Apps Script 部署後產生、結尾是 /exec）。'+
+      '只要輸入一次，這台裝置的瀏覽器會記住。</p>'+
+      '<input type="text" data-gasurl value="'+esc(GAS_URL)+'" '+
+      'placeholder="https://script.google.com/macros/s/.../exec">'+
+      '<div style="margin-top:12px;display:flex;gap:8px">'+
+        '<button class="b g" data-seturl="1">連線</button>'+
+        (GAS_URL?'<button class="s" data-clearurl="1">清除</button>':'')+
+      '</div></div>';
+    var el=document.querySelector("[data-gasurl]"); if(el) el.focus();
   }
 
   var saveTmr=null;
   function save(){
     if(saveTmr) clearTimeout(saveTmr);
     saveTmr=setTimeout(function(){
-      busy(true);
-      google.script.run
-        .withSuccessHandler(function(){ busy(false); })
-        .withFailureHandler(fail)
-        .saveMasters({items:S.items, branches:S.branches, prices:S.prices});
+      api("saveMasters", [{items:S.items, branches:S.branches, prices:S.prices}]);
     }, 1200);
   }
 
   function load(){
-    busy(true);
-    google.script.run
-      .withSuccessHandler(function(d){
-        busy(false);
-        S.items=d.items||[]; S.branches=d.branches||[];
-        S.prices=d.prices||{}; S.orders=d.orders||[];
-        ME=d.user||""; SHEET_URL=d.sheetUrl||""; IS_OWNER=!!d.isOwner;
-        PGROUPS.forEach(function(g){ if(!S.prices[g.key]) S.prices[g.key]={}; });
-        render();
-      })
-      .withFailureHandler(function(e){
-        busy(false);
-        document.getElementById("view").innerHTML=
-          '<div class="empty"><strong>連不上 Google 試算表</strong>'+
-          esc(e && e.message ? e.message : e)+'</div>';
-      })
-      .bootstrap();
+    if(!GAS_URL){ drawTabs(); setupScreen(); return; }
+    api("bootstrap", [], function(d){
+      S.items=d.items||[]; S.branches=d.branches||[];
+      S.prices=d.prices||{}; S.orders=d.orders||[];
+      ME=d.user||""; SHEET_URL=d.sheetUrl||"";
+      PGROUPS.forEach(function(g){ if(!S.prices[g.key]) S.prices[g.key]={}; });
+      render();
+    }, function(e){
+      setupScreen("連不上後端："+((e&&e.message)?e.message:e)+
+        "　請確認網址正確，且部署時「具有存取權的使用者」選的是「任何人」。");
+    });
   }
 
   /* ===== 分頁 ===== */
@@ -1031,6 +1058,7 @@
         (SHEET_URL?'<a href="'+esc(SHEET_URL)+'" target="_blank"><button class="s">開啟試算表</button></a>':'')+
         '<button class="b g" data-backup="1">立即建立備份</button>'+
         '<button class="s" data-listbk="1">重新整理清單</button>'+
+        '<button class="s" data-clearurl="1">更改後端網址</button>'+
       '</div></div>'+
       '<div class="box" style="border-color:var(--gold);background:var(--gold-soft)">'+
       '<b>還原只會蓋掉品項、通路、價格三份主檔。</b>　'+
@@ -1297,19 +1325,14 @@
           return {code:l.code,cat:l.cat,name:l.name,spec:l.spec,unit:l.unit,
                   qty:Number(l.qty), price:Number(l.price)||0};
         }) };
-      busy(true);
-      google.script.run
-        .withSuccessHandler(function(r){
-          busy(false);
+      api("saveDoc", [o], function(r){
           o.id=o.no; o.createdBy=r.by; o.createdAt=r.at;
           S.orders.push(o);
           if(o.reopenOf) S.orders.forEach(function(x){ if(x.no===o.reopenOf) x.replacedBy=o.no; });
           draft={type:o.type, branch:o.branch, wh:o.wh, toWh:draft.toWh,
                  date:today(), note:"", lines:[], q:"", cat:draft.cat, reopenOf:""};
           TAB="orders"; render(); toast("已寫入試算表　"+o.no); printOrder(o);
-        })
-        .withFailureHandler(fail)
-        .saveDoc(o);
+      });
       return;
     }
     if(d.print){
@@ -1322,15 +1345,10 @@
       var reason=prompt("作廢 "+vo.no+"。這張單會永久保留在試算表並標記為已作廢，不列入統計。\n請填作廢原因：","");
       if(reason===null) return;
       if(!reason.trim()){ toast("請填作廢原因"); return; }
-      busy(true);
-      google.script.run
-        .withSuccessHandler(function(r){
-          busy(false);
-          vo.voided={at:r.at, reason:r.reason};
-          render(); toast("已作廢 "+vo.no);
-        })
-        .withFailureHandler(fail)
-        .voidDoc(vo.no, reason.trim());
+      api("voidDoc", [vo.no, reason.trim()], function(r){
+        vo.voided={at:r.at, reason:r.reason};
+        render(); toast("已作廢 "+vo.no);
+      });
       return;
     }
     if(d.reopen){
@@ -1346,29 +1364,39 @@
     if(d.csv){ exportOrders(); return; }
     if(d.xcsv){ exportCross(); return; }
     if(d.allcsv){ exportAllBranches(); return; }
+    if(d.seturl){
+      var v=(document.querySelector("[data-gasurl]")||{}).value||"";
+      v=v.trim();
+      if(v.indexOf("https://")!==0 || v.indexOf("/exec")<0){
+        setupScreen("網址看起來不對，應該是 https://script.google.com/macros/s/.../exec"); return;
+      }
+      GAS_URL=v;
+      try{ localStorage.setItem(URL_KEY, v); }catch(e){}
+      load(); return;
+    }
+    if(d.clearurl){
+      GAS_URL="";
+      try{ localStorage.removeItem(URL_KEY); }catch(e){}
+      setupScreen(); return;
+    }
     if(d.backup){
       if(!confirm("在 Drive 上建立一份目前資料的完整備份？")) return;
-      busy(true);
-      google.script.run.withSuccessHandler(function(r){
-        busy(false); backups=null; render();
+      api("backupNow", [], function(r){
+        backups=null; render();
         toast("已建立備份 "+r.name);
         if(confirm("備份完成：\n"+r.name+"\n\n要開啟看看嗎？")) window.open(r.url,"_blank");
-      }).withFailureHandler(fail).backupNow();
+      });
       return;
     }
     if(d.listbk){
-      busy(true);
-      google.script.run.withSuccessHandler(function(r){
-        busy(false); backups=r||[]; render();
-      }).withFailureHandler(fail).listBackups();
+      api("listBackups", [], function(r){ backups=r||[]; render(); });
       return;
     }
     if(d.restore){
       if(!confirm("用這份備份覆蓋目前的品項、通路、價格主檔？\n單據不受影響。")) return;
-      busy(true);
-      google.script.run.withSuccessHandler(function(r){
-        busy(false); toast("已從 "+r.from+" 還原主檔"); load();
-      }).withFailureHandler(fail).restoreMasters(d.restore);
+      api("restoreMasters", [d.restore], function(r){
+        toast("已從 "+r.from+" 還原主檔"); load();
+      });
       return;
     }
     if(d.stmt){ printStatement(d.stmt); return; }
